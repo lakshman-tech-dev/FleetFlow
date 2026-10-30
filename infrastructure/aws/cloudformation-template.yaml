@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'FleetFlow: AI-Powered Fleet & Logistics Platform - AWS Learner Lab Deployment Template'
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t2.medium, t3.medium, t3.large]
+    Description: EC2 instance type for running FleetFlow Docker containers.
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Optional EC2 Key Pair for SSH access (e.g. vockey in Learner Lab).
+    Default: ''
+
+Resources:
+  # 1. S3 Data Lake Bucket for Parquet analytics & model artifacts
+  FleetFlowDataLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'fleetflow-analytics-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # 2. Security Group with Least Privilege access
+  FleetFlowSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FleetFlow Web & API Security Group
+      SecurityGroupIngress:
+        # Frontend UI Port
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Web Frontend HTTP
+        # Vite Dev / Frontend Port
+        - IpProtocol: tcp
+          FromPort: 5173
+          ToPort: 5173
+          CidrIp: 0.0.0.0/0
+          Description: Frontend App
+        # FastAPI Backend API Port
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+          Description: Backend REST API
+        # SSH Port
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH administration
+
+  # 3. EC2 Instance for Docker Orchestration in AWS Learner Lab
+  FleetFlowServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: ami-0c7217cdde317cfec # Amazon Linux 2023 AMI in us-east-1
+      KeyName: !If [HasKey, !Ref KeyName, !Ref 'AWS::NoValue']
+      IamInstanceProfile: LabInstanceProfile # Pre-created role in AWS Learner Lab
+      SecurityGroupIds:
+        - !Ref FleetFlowSecurityGroup
+      Tags:
+        - Key: Name
+          Value: FleetFlow-Production-Server
+        - Key: Environment
+          Value: Wipro-CPPE-Capstone
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y docker git
+          systemctl enable docker
+          systemctl start docker
+          usermod -a -G docker ec2-user
+
+          # Install Docker Compose v2
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -SL https://github.com/docker/compose/releases/download/v2.24.5/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          ln -s /usr/local/lib/docker/cli-plugins/docker-compose /usr/bin/docker-compose
+
+          echo "FleetFlow EC2 Environment Ready for Deployment." > /home/ec2-user/provision_status.txt
+
+Conditions:
+  HasKey: !Not [!Equals [!Ref KeyName, '']]
+
+Outputs:
+  InstancePublicIP:
+    Description: Public IP of the FleetFlow EC2 server
+    Value: !GetAtt FleetFlowServer.PublicIp
+
+  FrontendURL:
+    Description: Access FleetFlow Frontend Application
+    Value: !Sub 'http://${FleetFlowServer.PublicIp}'
+
+  BackendAPIURL:
+    Description: Access FleetFlow FastAPI Swagger Documentation
+    Value: !Sub 'http://${FleetFlowServer.PublicIp}:8000/docs'
+
+  S3DataLakeBucket:
+    Description: Name of S3 Data Lake Bucket
+    Value: !Ref FleetFlowDataLakeBucket

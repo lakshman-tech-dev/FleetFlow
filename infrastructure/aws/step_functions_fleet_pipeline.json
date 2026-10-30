@@ -1,0 +1,73 @@
+{
+  "Comment": "FleetFlow Automated End-to-End Logistics & Anomaly Workflow (AWS Step Functions)",
+  "StartAt": "IngestFreightData",
+  "States": {
+    "IngestFreightData": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:FleetFlow-DataIngestion",
+      "Comment": "Ingest trip dispatches and telemetry logs from S3 or API Gateway",
+      "Next": "ValidateDataQuality"
+    },
+    "ValidateDataQuality": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:FleetFlow-DataValidation",
+      "Comment": "Validate cargo payload, driver license expiration, and vehicle status",
+      "Next": "CheckValidationResult"
+    },
+    "CheckValidationResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validation_status",
+          "StringEquals": "FAILED",
+          "Next": "QuarantineInvalidRecords"
+        }
+      ],
+      "Default": "RunAIAnomalyDetection"
+    },
+    "QuarantineInvalidRecords": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:FleetFlow-QuarantineHandler",
+      "Comment": "Write rejected records with exact rejection reasons to audit quarantine store",
+      "End": true
+    },
+    "RunAIAnomalyDetection": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:FleetFlow-AIInference",
+      "Comment": "Execute Isolation Forest fuel anomaly model and maintenance risk scorer",
+      "Next": "EvaluateMechanicalRisk"
+    },
+    "EvaluateMechanicalRisk": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.high_maintenance_risk",
+          "BooleanEquals": true,
+          "Next": "TriggerMaintenanceGrounding"
+        }
+      ],
+      "Default": "PublishToAnalyticalLake"
+    },
+    "TriggerMaintenanceGrounding": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:FleetFlow-GroundVehicle",
+      "Comment": "Automatically set vehicle status to MAINTENANCE and alert dispatchers via SNS",
+      "Next": "PublishToAnalyticalLake"
+    },
+    "PublishToAnalyticalLake": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "FleetFlow-Glue-ETL-Job",
+        "Arguments": {
+          "--s3_target_bucket": "s3://fleetflow-analytics-data/spark_datalake/"
+        }
+      },
+      "Comment": "Trigger AWS Glue ETL job to partition into Snappy Parquet for Redshift Spectrum",
+      "Next": "WorkflowSucceeded"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    }
+  }
+}
